@@ -1,13 +1,7 @@
 import streamlit as st
-import re
-import json
+import ctypes
 import os
-import io
-import sys
 import base64
-import copy
-import shelve
-import builtins
 from datetime import datetime, timezone
 
 # ─── Page Config ─────────────────────────────────────────────────
@@ -17,121 +11,42 @@ st.set_page_config(
     layout="wide"
 )
 
-# ─── Shared State (shelve — persists on Streamlit Cloud) ──────────
-DB_PATH = os.path.join(os.path.dirname(__file__), "collab_db")
+# ─── Load C Shared Library ────────────────────────────────────────
+_lib_path = os.path.join(os.path.dirname(__file__), "editor_lib.dll")
+lib = ctypes.CDLL(_lib_path)
 
-EMPTY_STATE = {
-    "users":     {},
-    "document":  [],
-    "locked_by": None,
-    "chat":      [],
-    "versions":  [],
-    "media":     []
-}
+# ── Define return types for functions returning strings ───────────
+for fn in ["get_user_name", "get_user_info", "get_locked_by",
+           "get_doc_entry", "get_chat_entry", "get_suggestion",
+           "get_version_info", "get_version_entry",
+           "get_media_info", "get_media_data"]:
+    getattr(lib, fn).restype = ctypes.c_char_p
 
-TESTING_MODE = False  # Set to True to wipe data on every restart
+# ─── Helper: timestamp ───────────────────────────────────────────
+def ts():
+    return datetime.now(timezone.utc).strftime("%H:%M:%S UTC").encode()
 
-def load_state():
-    with shelve.open(DB_PATH) as db:
-        if TESTING_MODE or "state" not in db:
-            db["state"] = copy.deepcopy(EMPTY_STATE)
-        state = dict(db["state"])
-    # back-compat: add any missing keys
-    for k, v in EMPTY_STATE.items():
-        if k not in state:
-            state[k] = copy.deepcopy(v)
-    return state
+def ts_full():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC").encode()
 
-def save_state(state):
-    with shelve.open(DB_PATH) as db:
-        db["state"] = state
+# ─── Per-session: current logged-in user (index + name + role) ───
+if "current_user_idx"  not in st.session_state:
+    st.session_state.current_user_idx  = -1
+if "current_user_name" not in st.session_state:
+    st.session_state.current_user_name = ""
+if "current_user_role" not in st.session_state:
+    st.session_state.current_user_role = -1
 
-# ─── Per-session ──────────────────────────────────────────────────
-if "current_user" not in st.session_state:
-    st.session_state.current_user = None
+def cu_idx():  return st.session_state.current_user_idx
+def cu_name(): return st.session_state.current_user_name
+def cu_role(): return st.session_state.current_user_role
+def logged_in(): return cu_idx() != -1
+def is_editor(): return cu_role() == 1
 
-# ─── Helpers ─────────────────────────────────────────────────────
-def is_editor(state):
-    u = st.session_state.current_user
-    return u is not None and state["users"].get(u, {}).get("role") == "Editor"
-
-def doc_text(state):
-    return " ".join(e["text"] for e in state["document"] if e.get("type", "text") != "code")
-
-def word_count(text):
-    return len(re.findall(r'\S+', text)) if text.strip() else 0
-
-def char_count(text):
-    return len(text)
-
-def get_ai_suggestions(state):
-    content = doc_text(state)
-    suggestions = []
-    if not content.strip():
-        return ["Document is empty. Start with an introduction."]
-    if "introduction" not in content.lower():
-        suggestions.append("Consider adding an **Introduction** section.")
-    if "conclusion" not in content.lower():
-        suggestions.append("Consider adding a **Conclusion** section.")
-    wc = word_count(content)
-    if wc < 20:
-        suggestions.append(f"Document is short ({wc} words). Add more details.")
-    if content[0].islower():
-        suggestions.append("Start the document with a capital letter.")
-    last_char = content.rstrip()[-1] if content.strip() else ""
-    if last_char and last_char not in ".!?":
-        suggestions.append("Last sentence may be missing end punctuation.")
-    words = content.split()
-    for i in range(1, len(words)):
-        if words[i].lower() == words[i - 1].lower():
-            suggestions.append(f'Repeated word detected: **"{words[i]}"**.')
-            break
-    if not suggestions:
-        suggestions.append("Document looks good! No suggestions.")
-    return suggestions
-
-# Safe builtins allowed in code execution sandbox
-_SAFE_BUILTINS = {
-    name: getattr(builtins, name)
-    for name in [
-        "print", "range", "len", "int", "float", "str", "bool",
-        "list", "dict", "tuple", "set", "sum", "min", "max",
-        "abs", "round", "sorted", "enumerate", "zip", "map",
-        "filter", "isinstance", "type", "repr", "reversed"
-    ]
-}
-
-def run_code(code):
-    """Execute Python code in a restricted sandbox and capture stdout."""
-    # Reject any import or dangerous keyword before running
-    forbidden = ["import", "open", "exec", "eval", "__", "os.", "sys.", "subprocess"]
-    for word in forbidden:
-        if word in code:
-            return "", f"Blocked: '{word}' is not allowed in code blocks."
-    stdout_capture = io.StringIO()
-    stderr_capture = io.StringIO()
-    try:
-        sys.stdout = stdout_capture
-        sys.stderr = stderr_capture
-        safe_globals = {"__builtins__": _SAFE_BUILTINS}
-        compiled = compile(code, "<sandbox>", "exec")
-        eval(compiled, safe_globals)  # noqa: S307 — sandboxed namespace
-    except Exception as e:
-        stderr_capture.write(str(e))
-    finally:
-        sys.stdout = sys.__stdout__
-        sys.stderr = sys.__stderr__
-    return stdout_capture.getvalue(), stderr_capture.getvalue()
-
-# ─── Load CSS from external file ────────────────────────────────
+# ─── Load CSS ─────────────────────────────────────────────────────
 _css_path = os.path.join(os.path.dirname(__file__), "style.css")
 with open(_css_path) as _f:
     st.markdown(f"<style>{_f.read()}</style>", unsafe_allow_html=True)
-
-# ═══════════════════════════════════════════════════════════════
-#  LOAD SHARED STATE
-# ═══════════════════════════════════════════════════════════════
-state = load_state()
 
 # ═══════════════════════════════════════════════════════════════
 #  SIDEBAR
@@ -149,76 +64,91 @@ with st.sidebar:
             name = reg_name.strip()
             if not name:
                 st.error("Username cannot be empty.")
-            elif name in state["users"]:
-                st.warning(f"'{name}' already exists.")
             else:
-                state["users"][name] = {
-                    "role": reg_role,
-                    "registered_at": datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-                }
-                save_state(state)
-                st.success(f"'{name}' registered as {reg_role}.")
-                st.rerun()
+                role_int = 1 if reg_role == "Editor" else 0
+                result = lib.register_user(name.encode(), role_int, ts())
+                if result == 0:
+                    st.success(f"'{name}' registered as {reg_role}.")
+                    st.rerun()
+                elif result == -1:
+                    st.error("User limit reached.")
+                elif result == -2:
+                    st.warning(f"'{name}' already exists.")
 
     # ── Login ─────────────────────────────────────────────────
     with st.expander("🔑 Login", expanded=True):
-        if st.session_state.current_user:
-            u    = st.session_state.current_user
-            role = state["users"].get(u, {}).get("role", "Unknown")
-            badge = "badge-editor" if role == "Editor" else "badge-viewer"
-            st.markdown(f"Logged in as **{u}**")
-            st.markdown(f'<span class="{badge}">{role}</span>', unsafe_allow_html=True)
+        if logged_in():
+            badge = "badge-editor" if is_editor() else "badge-viewer"
+            role_label = "Editor" if is_editor() else "Viewer"
+            st.markdown(f"Logged in as **{cu_name()}**")
+            st.markdown(f'<span class="{badge}">{role_label}</span>', unsafe_allow_html=True)
             if st.button("Logout", key="btn_logout"):
-                st.session_state.current_user = None
+                st.session_state.current_user_idx  = -1
+                st.session_state.current_user_name = ""
+                st.session_state.current_user_role = -1
                 st.rerun()
         else:
-            user_list = list(state["users"].keys())
-            login_name = st.selectbox(
-                "Select user",
-                ["-- select --"] + user_list,
-                key="login_select"
-            )
+            # Build user list from C
+            user_list = []
+            for i in range(lib.get_user_count()):
+                info = lib.get_user_info(i).decode()
+                parts = info.split("|")
+                user_list.append(parts[0])
+
+            login_name = st.selectbox("Select user",
+                                      ["-- select --"] + user_list,
+                                      key="login_select")
             if st.button("Login", key="btn_login"):
                 if login_name == "-- select --":
                     st.error("Select a user.")
                 else:
-                    st.session_state.current_user = login_name
-                    st.rerun()
+                    idx = lib.login_user(login_name.encode())
+                    if idx >= 0:
+                        st.session_state.current_user_idx  = idx
+                        st.session_state.current_user_name = login_name
+                        st.session_state.current_user_role = lib.get_user_role(idx)
+                        st.rerun()
+                    else:
+                        st.error("User not found.")
 
     st.divider()
 
     # ── Status Bar ────────────────────────────────────────────
     st.markdown("**📊 Status Bar**")
-    content = doc_text(state)
     col1, col2 = st.columns(2)
-    col1.metric("Words", word_count(content))
-    col2.metric("Chars", char_count(content))
+    col1.metric("Words", lib.get_word_count())
+    col2.metric("Chars", lib.get_char_count())
 
-    if state["locked_by"]:
-        st.markdown(f'<span class="badge-locked">🔒 Locked by {state["locked_by"]}</span>', unsafe_allow_html=True)
+    locked_by = lib.get_locked_by().decode()
+    if locked_by:
+        st.markdown(f'<span class="badge-locked">🔒 Locked by {locked_by}</span>', unsafe_allow_html=True)
     else:
         st.markdown('<span class="badge-free">🔓 Unlocked</span>', unsafe_allow_html=True)
 
     st.divider()
 
     # ── Registered Users ──────────────────────────────────────
-    if state["users"]:
+    count = lib.get_user_count()
+    if count > 0:
         st.markdown("**👥 Registered Users**")
-        for uname, udata in state["users"].items():
-            badge = "badge-editor" if udata["role"] == "Editor" else "badge-viewer"
-            indicator = "🟢" if uname == st.session_state.current_user else "⚪"
+        for i in range(count):
+            info  = lib.get_user_info(i).decode().split("|")
+            uname = info[0]
+            urole = "Editor" if info[1] == "1" else "Viewer"
+            badge = "badge-editor" if info[1] == "1" else "badge-viewer"
+            indicator = "🟢" if uname == cu_name() else "⚪"
             st.markdown(
-                f'{indicator} **{uname}** <span class="{badge}">{udata["role"]}</span>',
+                f'{indicator} **{uname}** <span class="{badge}">{urole}</span>',
                 unsafe_allow_html=True
             )
 
     st.divider()
-    st.markdown('<div class="sub-title">🔄 Auto-refreshes every 5s</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">🔄 Click Refresh to see updates</div>', unsafe_allow_html=True)
     if st.button("🔄 Refresh Now", key="manual_refresh"):
         st.rerun()
 
 # ═══════════════════════════════════════════════════════════════
-#  MAIN AREA — TABS
+#  MAIN TABS
 # ═══════════════════════════════════════════════════════════════
 tab_edit, tab_view, tab_chat, tab_ai, tab_stats, tab_media, tab_version = st.tabs([
     "✏️ Edit", "📄 View", "💬 Chat", "🤖 AI Suggestions",
@@ -228,35 +158,31 @@ tab_edit, tab_view, tab_chat, tab_ai, tab_stats, tab_media, tab_version = st.tab
 # ── TAB 1: EDIT ───────────────────────────────────────────────
 with tab_edit:
     st.markdown("### ✏️ Edit Document")
-    current = st.session_state.current_user
 
-    if not current:
-        st.info("Please login from the sidebar to edit.")
-    elif not is_editor(state):
-        st.warning("🚫 You are a **Viewer**. Only Editors can edit the document.")
+    if not logged_in():
+        st.info("Please login from the sidebar.")
+    elif not is_editor():
+        st.warning("🚫 You are a **Viewer**. Only Editors can edit.")
     else:
-        locked_by = state["locked_by"]
+        locked_by = lib.get_locked_by().decode()
 
-        if locked_by is None:
+        if not locked_by:
             st.markdown('<div class="unlock-banner">🔓 Document is unlocked. Lock it to start editing.</div>', unsafe_allow_html=True)
             if st.button("🔒 Lock Document"):
-                state["locked_by"] = current
-                save_state(state)
+                lib.lock_document(cu_name().encode(), cu_role())
                 st.rerun()
-
-        elif locked_by == current:
+        elif locked_by == cu_name():
             st.markdown('<div class="unlock-banner">🔒 You hold the lock. You can edit now.</div>', unsafe_allow_html=True)
             if st.button("🔓 Unlock Document"):
-                state["locked_by"] = None
-                save_state(state)
+                lib.unlock_document(cu_name().encode())
                 st.rerun()
         else:
-            st.markdown(f'<div class="lock-banner">🔒 Document is locked by <b>{locked_by}</b>. Cannot edit.</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="lock-banner">🔒 Locked by <b>{locked_by}</b>. Cannot edit.</div>', unsafe_allow_html=True)
 
-        if state["locked_by"] == current:
+        if lib.get_locked_by().decode() == cu_name():
             st.divider()
 
-            # ── Text Entry ────────────────────────────────────
+            # Text entry
             with st.form("edit_form", clear_on_submit=True):
                 text = st.text_area("Text to append", placeholder="Type your content here...", height=100)
                 fmt  = st.radio("Formatting", ["Normal", "Bold", "Italic"], horizontal=True)
@@ -264,20 +190,18 @@ with tab_edit:
                     if not text.strip():
                         st.error("Text cannot be empty.")
                     else:
-                        state["document"].append({
-                            "type": "text",
-                            "user": current,
-                            "text": text.strip(),
-                            "fmt":  fmt,
-                            "time": datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-                        })
-                        save_state(state)
-                        st.success("Text appended.")
-                        st.rerun()
+                        r = lib.append_text(cu_name().encode(), cu_role(),
+                                            text.strip().encode(),
+                                            fmt.encode(), ts())
+                        if r == 0:
+                            st.success("Text appended.")
+                            st.rerun()
+                        else:
+                            st.error(f"Error appending text (code {r}).")
 
             st.divider()
 
-            # ── Code Block Entry ──────────────────────────────
+            # Code block entry
             st.markdown("**💻 Insert Executable Code Block**")
             with st.form("code_form", clear_on_submit=True):
                 code = st.text_area("Python code", placeholder="print('Hello World')", height=120)
@@ -285,72 +209,82 @@ with tab_edit:
                     if not code.strip():
                         st.error("Code cannot be empty.")
                     else:
-                        state["document"].append({
-                            "type": "code",
-                            "user": current,
-                            "text": code.strip(),
-                            "fmt":  "code",
-                            "time": datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-                        })
-                        save_state(state)
-                        st.success("Code block added.")
-                        st.rerun()
+                        r = lib.append_code(cu_name().encode(), cu_role(),
+                                            code.strip().encode(), ts())
+                        if r == 0:
+                            st.success("Code block added.")
+                            st.rerun()
+                        else:
+                            st.error(f"Error adding code (code {r}).")
 
             st.divider()
 
-            # ── Save Version ──────────────────────────────────
+            # Save version
             st.markdown("**🕓 Save Version Snapshot**")
             with st.form("version_form", clear_on_submit=True):
                 version_label = st.text_input("Version label", placeholder="e.g. Draft v1")
                 if st.form_submit_button("💾 Save Version"):
-                    label = version_label.strip() or f"Version {len(state['versions']) + 1}"
-                    state["versions"].append({
-                        "label":    label,
-                        "time":     datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-                        "saved_by": current,
-                        "snapshot": copy.deepcopy(state["document"])
-                    })
-                    save_state(state)
-                    st.success(f"Version '{label}' saved.")
-                    st.rerun()
+                    vc = lib.get_version_count()
+                    label = version_label.strip() or f"Version {vc + 1}"
+                    r = lib.save_version(label.encode(),
+                                         cu_name().encode(), ts_full())
+                    if r == 0:
+                        st.success(f"Version '{label}' saved.")
+                        st.rerun()
+                    else:
+                        st.error("Version limit reached.")
 
 # ── TAB 2: VIEW ───────────────────────────────────────────────
 with tab_view:
     st.markdown("### 📄 Document")
-    if not state["document"]:
-        st.markdown('<div style="color:#8892b0;text-align:center;padding:40px;">Document is empty.</div>', unsafe_allow_html=True)
+    dc = lib.get_doc_count()
+    if dc == 0:
+        st.markdown('<div style="color:#a0aec0;text-align:center;padding:40px;">Document is empty.</div>', unsafe_allow_html=True)
     else:
-        for i, entry in enumerate(state["document"]):
-            etype = entry.get("type", "text")
-            user  = entry["user"]
-            time  = entry["time"]
+        for i in range(dc):
+            entry = lib.get_doc_entry(i).decode().split("|", 4)
+            etype, user, text, fmt, time = entry[0], entry[1], entry[2], entry[3], entry[4]
 
             if etype == "code":
                 st.markdown(
                     f'<div class="code-entry">'
-                    f'<span style="color:#f97316;font-weight:600;">💻 [{user}]</span> '
-                    f'<span style="color:#8892b0;font-size:0.78rem;">({time})</span>'
+                    f'<span style="color:#10b981;font-weight:600;">💻 [{user}]</span> '
+                    f'<span style="color:#a0aec0;font-size:0.78rem;">({time})</span>'
                     f'</div>',
                     unsafe_allow_html=True
                 )
-                st.code(entry["text"], language="python")
+                st.code(text, language="python")
+                # Code execution handled in Python (UI only — logic was stored in C)
                 if st.button(f"▶ Run", key=f"run_{i}"):
-                    out, err = run_code(entry["text"])
-                    if out:
-                        st.success(f"Output:\n{out}")
-                    if err:
-                        st.error(f"Error:\n{err}")
-                    if not out and not err:
-                        st.info("Code ran with no output.")
+                    import io, sys, builtins
+                    _SAFE = {n: getattr(builtins, n) for n in
+                             ["print","range","len","int","float","str","bool",
+                              "list","dict","tuple","set","sum","min","max",
+                              "abs","round","sorted","enumerate","zip","map",
+                              "filter","isinstance","type","repr","reversed"]}
+                    forbidden = ["import","open","exec","eval","__","os.","sys.","subprocess"]
+                    blocked = next((w for w in forbidden if w in text), None)
+                    if blocked:
+                        st.error(f"Blocked: '{blocked}' is not allowed.")
+                    else:
+                        buf = io.StringIO()
+                        sys.stdout = buf
+                        try:
+                            eval(compile(text, "<sandbox>", "exec"),
+                                 {"__builtins__": _SAFE})
+                            sys.stdout = sys.__stdout__
+                            out = buf.getvalue()
+                            st.success(f"Output:\n{out}" if out else "Ran with no output.")
+                        except Exception as e:
+                            sys.stdout = sys.__stdout__
+                            st.error(f"Error: {e}")
             else:
-                text    = entry["text"]
-                fmt     = entry.get("fmt", "Normal")
                 display = f"<b>{text}</b>" if fmt == "Bold" else (f"<i>{text}</i>" if fmt == "Italic" else text)
                 st.markdown(
                     f'<div class="doc-entry">'
-                    f'<span style="color:#64ffda;font-weight:600;">[{user}]</span> '
-                    f'<span style="color:#8892b0;font-size:0.78rem;">({time})</span><br>'
-                    f'<span style="color:#ccd6f6;">{display}</span>'
+                    f'<span style="color:#7c3aed;font-weight:600;">[{user}]</span> '
+                    f'<span style="color:#a0aec0;font-size:0.78rem;">({time})</span><br>'
+                    f'<span style="color:#e2e8f0;">{display}</span>'
                     f'</div>',
                     unsafe_allow_html=True
                 )
@@ -358,9 +292,8 @@ with tab_view:
 # ── TAB 3: CHAT ───────────────────────────────────────────────
 with tab_chat:
     st.markdown("### 💬 Chat")
-    current = st.session_state.current_user
 
-    if not current:
+    if not logged_in():
         st.info("Login to send messages.")
     else:
         with st.form("chat_form", clear_on_submit=True):
@@ -369,24 +302,26 @@ with tab_chat:
                 if not msg.strip():
                     st.error("Message cannot be empty.")
                 else:
-                    state["chat"].append({
-                        "user":    current,
-                        "message": msg.strip(),
-                        "time":    datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-                    })
-                    save_state(state)
-                    st.rerun()
+                    r = lib.send_message(cu_name().encode(),
+                                         msg.strip().encode(), ts())
+                    if r == 0:
+                        st.rerun()
+                    else:
+                        st.error("Chat history full.")
 
     st.divider()
-    if not state["chat"]:
-        st.markdown('<div style="color:#8892b0;text-align:center;">No messages yet.</div>', unsafe_allow_html=True)
+    cc = lib.get_chat_count()
+    if cc == 0:
+        st.markdown('<div style="color:#a0aec0;text-align:center;">No messages yet.</div>', unsafe_allow_html=True)
     else:
-        for msg in reversed(state["chat"]):
+        for i in range(cc - 1, -1, -1):
+            entry = lib.get_chat_entry(i).decode().split("|", 2)
+            user, message, time = entry[0], entry[1], entry[2]
             st.markdown(
                 f'<div class="chat-bubble">'
-                f'<span class="chat-user">{msg["user"]}</span>'
-                f'<span class="chat-time">{msg["time"]}</span><br>'
-                f'<span>{msg["message"]}</span>'
+                f'<span class="chat-user">{user}</span>'
+                f'<span class="chat-time">{time}</span><br>'
+                f'<span>{message}</span>'
                 f'</div>',
                 unsafe_allow_html=True
             )
@@ -394,10 +329,12 @@ with tab_chat:
 # ── TAB 4: AI SUGGESTIONS ─────────────────────────────────────
 with tab_ai:
     st.markdown("### 🤖 AI Suggestions")
-    st.markdown('<div class="sub-title">Rule-based analysis — no external API</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">Rule-based analysis — logic runs in C</div>', unsafe_allow_html=True)
     st.divider()
     if st.button("🔍 Analyze Document"):
-        for s in get_ai_suggestions(state):
+        count = lib.analyze_document()
+        for i in range(count):
+            s = lib.get_suggestion(i).decode()
             icon = "✅" if "looks good" in s else "💡"
             st.markdown(f'<div class="suggestion">{icon} {s}</div>', unsafe_allow_html=True)
 
@@ -406,18 +343,19 @@ with tab_stats:
     st.markdown("### 📊 Document Stats")
     st.divider()
 
-    content  = doc_text(state)
-    wc       = word_count(content)
-    cc       = char_count(content)
-    entries  = len(state["document"])
-    editors  = sum(1 for u in state["users"].values() if u["role"] == "Editor")
-    viewers  = sum(1 for u in state["users"].values() if u["role"] == "Viewer")
-    messages = len(state["chat"])
-    versions = len(state["versions"])
-    media    = len(state["media"])
+    wc       = lib.get_word_count()
+    cc       = lib.get_char_count()
+    entries  = lib.get_doc_count()
+    editors  = lib.get_editor_count()
+    viewers  = lib.get_viewer_count()
+    messages = lib.get_chat_count()
+    versions = lib.get_version_count()
+    media    = lib.get_media_count()
 
     c1, c2, c3 = st.columns(3)
-    for col, label, value in zip([c1, c2, c3], ["Words", "Characters", "Doc Entries"], [wc, cc, entries]):
+    for col, label, value in zip([c1, c2, c3],
+                                  ["Words", "Characters", "Doc Entries"],
+                                  [wc, cc, entries]):
         col.markdown(
             f'<div class="stat-box"><div class="stat-number">{value}</div>'
             f'<div class="stat-label">{label}</div></div>',
@@ -426,7 +364,9 @@ with tab_stats:
 
     st.divider()
     c4, c5, c6 = st.columns(3)
-    for col, label, value in zip([c4, c5, c6], ["Editors", "Viewers", "Chat Messages"], [editors, viewers, messages]):
+    for col, label, value in zip([c4, c5, c6],
+                                  ["Editors", "Viewers", "Chat Messages"],
+                                  [editors, viewers, messages]):
         col.markdown(
             f'<div class="stat-box"><div class="stat-number">{value}</div>'
             f'<div class="stat-label">{label}</div></div>',
@@ -435,7 +375,9 @@ with tab_stats:
 
     st.divider()
     c7, c8 = st.columns(2)
-    for col, label, value in zip([c7, c8], ["Saved Versions", "Media Files"], [versions, media]):
+    for col, label, value in zip([c7, c8],
+                                  ["Saved Versions", "Media Files"],
+                                  [versions, media]):
         col.markdown(
             f'<div class="stat-box"><div class="stat-number">{value}</div>'
             f'<div class="stat-label">{label}</div></div>',
@@ -443,19 +385,19 @@ with tab_stats:
         )
 
     st.divider()
-    if state["locked_by"]:
-        st.markdown(f'<div class="lock-banner">🔒 Document currently locked by <b>{state["locked_by"]}</b></div>', unsafe_allow_html=True)
+    locked_by = lib.get_locked_by().decode()
+    if locked_by:
+        st.markdown(f'<div class="lock-banner">🔒 Locked by <b>{locked_by}</b></div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="unlock-banner">🔓 Document is currently unlocked</div>', unsafe_allow_html=True)
 
 # ── TAB 6: MEDIA ──────────────────────────────────────────────
 with tab_media:
     st.markdown("### 🖼️ Multimedia")
-    current = st.session_state.current_user
 
-    if not current:
+    if not logged_in():
         st.info("Login to upload media.")
-    elif not is_editor(state):
+    elif not is_editor():
         st.warning("🚫 Only Editors can upload media.")
     else:
         uploaded = st.file_uploader(
@@ -465,31 +407,34 @@ with tab_media:
         )
         if uploaded and st.button("📤 Add to Document"):
             data_b64 = base64.b64encode(uploaded.read()).decode("utf-8")
-            state["media"].append({
-                "user":     current,
-                "filename": uploaded.name,
-                "data_b64": data_b64,
-                "mime":     uploaded.type,
-                "time":     datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-            })
-            save_state(state)
-            st.success(f"'{uploaded.name}' uploaded.")
-            st.rerun()
+            r = lib.add_media(cu_name().encode(),
+                              uploaded.name.encode(),
+                              uploaded.type.encode(),
+                              data_b64.encode(),
+                              ts())
+            if r == 0:
+                st.success(f"'{uploaded.name}' uploaded.")
+                st.rerun()
+            else:
+                st.error("Media limit reached.")
 
     st.divider()
-    if not state["media"]:
-        st.markdown('<div style="color:#8892b0;text-align:center;">No media uploaded yet.</div>', unsafe_allow_html=True)
+    mc = lib.get_media_count()
+    if mc == 0:
+        st.markdown('<div style="color:#a0aec0;text-align:center;">No media uploaded yet.</div>', unsafe_allow_html=True)
     else:
-        for item in state["media"]:
+        for i in range(mc):
+            info  = lib.get_media_info(i).decode().split("|")
+            user, filename, mime, time = info[0], info[1], info[2], info[3]
+            data_b64 = lib.get_media_data(i).decode()
             st.markdown(
-                f'<span style="color:#64ffda;font-weight:600;">[{item["user"]}]</span> '
-                f'<span style="color:#8892b0;font-size:0.8rem;">{item["filename"]} — {item["time"]}</span>',
+                f'<span style="color:#7c3aed;font-weight:600;">[{user}]</span> '
+                f'<span style="color:#a0aec0;font-size:0.8rem;">{filename} — {time}</span>',
                 unsafe_allow_html=True
             )
-            mime = item["mime"]
-            data = base64.b64decode(item["data_b64"])
+            data = base64.b64decode(data_b64)
             if mime.startswith("image"):
-                st.image(data, caption=item["filename"], use_container_width=True)
+                st.image(data, caption=filename, use_container_width=True)
             elif mime.startswith("video"):
                 st.video(data)
             st.divider()
@@ -498,40 +443,44 @@ with tab_media:
 with tab_version:
     st.markdown("### 🕓 Version History")
 
-    if not state["versions"]:
-        st.markdown('<div style="color:#8892b0;text-align:center;padding:30px;">No versions saved yet.</div>', unsafe_allow_html=True)
+    vc = lib.get_version_count()
+    if vc == 0:
+        st.markdown('<div style="color:#a0aec0;text-align:center;padding:30px;">No versions saved yet.</div>', unsafe_allow_html=True)
     else:
-        for i, ver in enumerate(reversed(state["versions"])):
-            idx = len(state["versions"]) - 1 - i
-            with st.container():
-                st.markdown(
-                    f'<div class="version-card">'
-                    f'<span style="color:#64ffda;font-weight:600;">📌 {ver["label"]}</span><br>'
-                    f'<span style="color:#8892b0;font-size:0.8rem;">Saved by {ver["saved_by"]} at {ver["time"]}</span><br>'
-                    f'<span style="color:#ccd6f6;font-size:0.85rem;">{len(ver["snapshot"])} entries in this snapshot</span>'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
+        for i in range(vc - 1, -1, -1):
+            info   = lib.get_version_info(i).decode().split("|")
+            label  = info[0]
+            saved_by = info[1]
+            time   = info[2]
+            count  = int(info[3])
 
-                col_preview, col_restore = st.columns([3, 1])
+            st.markdown(
+                f'<div class="version-card">'
+                f'<span style="color:#f472b6;font-weight:600;">📌 {label}</span><br>'
+                f'<span style="color:#a0aec0;font-size:0.8rem;">Saved by {saved_by} at {time}</span><br>'
+                f'<span style="color:#e2e8f0;font-size:0.85rem;">{count} entries in this snapshot</span>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
 
-                with col_preview:
-                    with st.expander(f"👁 Preview — {ver['label']}"):
-                        if not ver["snapshot"]:
-                            st.write("Empty snapshot.")
-                        for entry in ver["snapshot"]:
-                            etype = entry.get("type", "text")
-                            if etype == "code":
-                                st.code(entry["text"], language="python")
-                            else:
-                                fmt = entry.get("fmt", "Normal")
-                                txt = f"**{entry['text']}**" if fmt == "Bold" else (f"*{entry['text']}*" if fmt == "Italic" else entry["text"])
-                                st.markdown(f"**[{entry['user']}]** ({entry['time']}): {txt}")
+            col_preview, col_restore = st.columns([3, 1])
+            with col_preview:
+                with st.expander(f"👁 Preview — {label}"):
+                    if count == 0:
+                        st.write("Empty snapshot.")
+                    for j in range(count):
+                        e = lib.get_version_entry(i, j).decode().split("|", 4)
+                        etype, euser, etext, efmt, etime = e[0], e[1], e[2], e[3], e[4]
+                        if etype == "code":
+                            st.code(etext, language="python")
+                        else:
+                            txt = f"**{etext}**" if efmt == "Bold" else (f"*{etext}*" if efmt == "Italic" else etext)
+                            st.markdown(f"**[{euser}]** ({etime}): {txt}")
 
-                with col_restore:
-                    if is_editor(state):
-                        if st.button(f"♻️ Restore", key=f"restore_{idx}"):
-                            state["document"] = copy.deepcopy(ver["snapshot"])
-                            save_state(state)
-                            st.success(f"Restored to '{ver['label']}'.")
+            with col_restore:
+                if is_editor():
+                    if st.button(f"♻️ Restore", key=f"restore_{i}"):
+                        r = lib.restore_version(i, cu_role())
+                        if r == 0:
+                            st.success(f"Restored to '{label}'.")
                             st.rerun()
