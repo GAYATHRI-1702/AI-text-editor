@@ -1,0 +1,109 @@
+.stApp { background-color: #080810; }
+
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #0d0d1a 0%, #0a0a15 100%);
+    border-right: 2px solid #7c3aed;
+}
+
+.stTabs [data-baseweb="tab-list"] {
+    background: linear-gradient(90deg, #1a0533, #051a33, #033318);
+    border-radius: 10px; padding: 4px; gap: 4px;
+}
+.stTabs [data-baseweb="tab"] {
+    background-color: transparent; color: #a0aec0;
+    border-radius: 8px; font-weight: 500; padding: 8px 20px;
+}
+.stTabs [aria-selected="true"] {
+    background: linear-gradient(135deg, #7c3aed, #2563eb) !important;
+    color: #ffffff !important;
+}
+
+.doc-entry {
+    background: linear-gradient(135deg, #0d0d1a, #0a1628);
+    border-left: 3px solid #06b6d4;
+    border-radius: 0 8px 8px 0; padding: 10px 16px;
+    margin-bottom: 8px; color: #e2e8f0;
+}
+.code-entry {
+    background: linear-gradient(135deg, #0a0a15, #0d1a0d);
+    border-left: 3px solid #10b981;
+    border-radius: 0 8px 8px 0; padding: 10px 16px;
+    margin-bottom: 8px; color: #e2e8f0; font-family: monospace;
+}
+
+.chat-bubble {
+    background: linear-gradient(135deg, #1a0533, #051a33);
+    border-radius: 12px; padding: 10px 16px;
+    margin-bottom: 8px; color: #e2e8f0;
+    border: 1px solid #7c3aed;
+}
+.chat-user  { color: #f472b6; font-weight: 600; font-size: 0.85rem; }
+.chat-time  { color: #a0aec0; font-size: 0.75rem; float: right; }
+
+.badge-editor { background: linear-gradient(135deg, #7c3aed, #2563eb); color:#ffffff; padding:3px 10px; border-radius:20px; font-size:0.8rem; }
+.badge-viewer { background: linear-gradient(135deg, #d97706, #dc2626); color:#ffffff; padding:3px 10px; border-radius:20px; font-size:0.8rem; }
+.badge-locked { background: linear-gradient(135deg, #dc2626, #9f1239); color:#ffffff; padding:3px 10px; border-radius:20px; font-size:0.8rem; }
+.badge-free   { background: linear-gradient(135deg, #059669, #0891b2); color:#ffffff; padding:3px 10px; border-radius:20px; font-size:0.8rem; }
+
+.stat-box {
+    background: linear-gradient(135deg, #0d0d1a, #0a1628);
+    border: 1px solid #7c3aed; border-radius: 10px; padding: 16px; text-align: center;
+}
+.stat-number {
+    font-size: 2rem; font-weight: 700;
+    background: linear-gradient(90deg, #f472b6, #7c3aed, #06b6d4);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.stat-label { font-size: 0.85rem; color: #a0aec0; margin-top: 4px; }
+
+.suggestion {
+    background: linear-gradient(135deg, #1a1a05, #051a0d);
+    border-left: 3px solid #fbbf24;
+    border-radius: 0 8px 8px 0; padding: 10px 16px;
+    margin-bottom: 8px; color: #e2e8f0;
+}
+.version-card {
+    background: linear-gradient(135deg, #0d0d1a, #0a1628);
+    border: 1px solid #2563eb; border-radius: 10px;
+    padding: 14px; margin-bottom: 10px;
+}
+
+.stButton > button {
+    background: linear-gradient(135deg, #7c3aed, #2563eb, #06b6d4);
+    color: #ffffff; border: none;
+    border-radius: 8px; font-weight: 700;
+    background-size: 200% auto;
+    transition: all 0.3s ease;
+}
+.stButton > button:hover {
+    background: linear-gradient(135deg, #06b6d4, #2563eb, #7c3aed);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 20px #7c3aed88;
+}
+
+.stTextInput > div > div > input,
+.stTextArea > div > div > textarea {
+    background-color: #0d0d1a !important;
+    color: #e2e8f0 !important;
+    border: 1px solid #7c3aed !important;
+    border-radius: 8px !important;
+}
+
+.main-title {
+    font-size: 1.8rem; font-weight: 700;
+    background: linear-gradient(90deg, #f472b6, #7c3aed, #2563eb, #06b6d4, #10b981);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    letter-spacing: 1px;
+}
+.sub-title { color: #a0aec0; font-size: 0.9rem; }
+
+.lock-banner {
+    background: linear-gradient(135deg, #4a0a0a, #1a0533);
+    border: 1px solid #dc262688;
+    border-radius: 8px; padding: 10px 16px; color: #fca5a5; margin-bottom: 12px;
+}
+.unlock-banner {
+    background: linear-gradient(135deg, #033318, #051a33);
+    border: 1px solid #10b98188;
+    border-radius: 8px; padding: 10px 16px; color: #6ee7b7; margin-bottom: 12px;
+}

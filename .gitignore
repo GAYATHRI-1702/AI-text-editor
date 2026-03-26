@@ -1,0 +1,7 @@
+*.exe
+*.db
+*.dir
+*.bak
+collab_db*
+__pycache__/
+*.pyc
