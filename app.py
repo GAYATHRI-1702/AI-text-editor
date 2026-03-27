@@ -11,8 +11,22 @@ st.set_page_config(
     layout="wide"
 )
 
-# ─── Load C Shared Library ────────────────────────────────────────
-_lib_path = os.path.join(os.path.dirname(__file__), "editor_lib.dll")
+# ─── Load C Shared Library (compile at runtime for Linux/Cloud) ──
+import subprocess
+import platform
+
+_base = os.path.dirname(__file__)
+_src  = os.path.join(_base, "editor_lib.c")
+
+if platform.system() == "Windows":
+    _lib_path = os.path.join(_base, "editor_lib.dll")
+    if not os.path.exists(_lib_path):
+        subprocess.run(["gcc", "-shared", "-o", _lib_path, _src, "-fPIC"], check=True)
+else:
+    _lib_path = os.path.join(_base, "editor_lib.so")
+    if not os.path.exists(_lib_path):
+        subprocess.run(["gcc", "-shared", "-o", _lib_path, _src, "-fPIC"], check=True)
+
 lib = ctypes.CDLL(_lib_path)
 
 # ── Define return types for functions returning strings ───────────
