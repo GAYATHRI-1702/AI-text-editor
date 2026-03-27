@@ -1,4 +1,6 @@
 *.exe
+*.dll
+*.so
 *.bak
 *.dir
 *.dat
